@@ -2,8 +2,14 @@
 name = "git-query"
 version = "0.1.0"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+description = "Run SQL against git history"
+documentation = "https://github.com/MatthewFay/git-query"
+readme = "README.md"
+homepage = "https://github.com/MatthewFay/git-query"
+repository = "https://github.com/MatthewFay/git-query"
+license = "MIT OR Apache-2.0"
+keywords = ["git", "git log", "sql", "history", "commits"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 chrono = "0.4.34"

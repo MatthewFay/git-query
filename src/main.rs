@@ -103,12 +103,12 @@ fn main() -> Result<(), String> {
     let conn = init_db(&repo, revwalk).map_err(|err| format!("DB error. {}", err))?;
 
     // Run initial SQL query
-    println!("{} {}", TERMINAL_PROMPT, INIT_SQL_QUERY);
+    println!("{}{}", TERMINAL_PROMPT, INIT_SQL_QUERY);
     run_sql_query(&conn, INIT_SQL_QUERY)
         .map_err(|err| format!("Initial SQL query failed. {}", err))?;
 
     loop {
-        print!("{} ", TERMINAL_PROMPT);
+        print!("{}", TERMINAL_PROMPT);
         // Ensure the prompt is displayed immediately
         stdout()
             .flush()

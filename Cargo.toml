@@ -8,7 +8,7 @@ readme = "README.md"
 homepage = "https://github.com/MatthewFay/git-query"
 repository = "https://github.com/MatthewFay/git-query"
 license = "MIT OR Apache-2.0"
-keywords = ["git", "git log", "sql", "history", "commits"]
+keywords = ["git", "log", "sql", "history", "commits"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]

@@ -4,7 +4,7 @@
 
 ## Installation
 
-Ensure that you have Rust installed on your system. Then, install `git-query` using the following command:
+Ensure that you have [Rust](https://www.rust-lang.org/tools/install) installed on your system. Then, install `git-query` using the following command:
 ```
 cargo install git-query
 ```
@@ -13,24 +13,22 @@ cargo install git-query
 
 1. Open a terminal and navigate to the Git repository you want to query.
 2. Run the git-query command:
-```
-git-query
-```
-This will initiate the program and execute an initial SQL query, displaying the latest commit for the repository.
+   ```
+   git-query
+   ```
+   This will initiate the program and execute an initial SQL query, displaying the latest commit for the repository.
 3. You can then run SQL queries against the commits table. For example, to retrieve commits within a specific time range:
-```
-SELECT * FROM commits WHERE date BETWEEN '2022-01-01 00:00:00 UTC' AND '2022-12-31 23:59:59 UTC';
-```
+   ```
+   SELECT * FROM commits WHERE date BETWEEN '2022-01-01 00:00:00 UTC' AND '2022-12-31 23:59:59 UTC';
+   ```
 4. To exit the program, simply enter the following command:
-```
-exit
-```
-
-Using command line, navigate to the git repo that you'd like to query. Then run `git-query` to start the program. You will see an initial SQL query run and a result, which is the latest commit for the given repo. After, run any SQL you'd like against the `commits` table. When you're done, enter the "exit" command to exit the program.
+   ```
+   exit
+   ```
 
 ### Example queries
 
-These queries use serde repo: https://github.com/serde-rs/serde
+These queries use the [serde repo](https://github.com/serde-rs/serde).
 
 #### Get most recent commit
 ```
@@ -127,6 +125,12 @@ Rows returned: 1
 └─────────┴───────────────┴─────────────────────────┴──────────────────────────┘
 Rows returned: 1
 ```
+
+### Tips
+
+* Utilize standard SQL queries to extract valuable insights from your Git commit history.
+* Experiment with different queries to tailor the results to your specific needs.
+* Refer to the [SQLite documentation](https://www.sqlite.org/docs.html) for advanced SQL syntax.
 
 ## License
 

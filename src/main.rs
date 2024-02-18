@@ -1,20 +1,18 @@
 use chrono::{TimeZone, Utc};
 use comfy_table::Table;
 use comfy_table::{presets::UTF8_FULL, ContentArrangement};
-use git2::{
-    Commit as GitCommit, Error as GitError, ObjectType, Oid, Repository, Revwalk, Signature,
-};
+use git2::{Commit as GitCommit, ObjectType, Oid, Repository, Revwalk};
 use rusqlite::{types::Value, Connection, Error as SqlError, Result};
 use std::io::{stdin, stdout, Write};
 
-// Struct to support both annotated and lightweight git tags
-struct GitTag<'a> {
+// Enum to support both annotated and lightweight git tags
+struct GitTag {
     pub id: Oid,
-    pub name: Option<&'a str>,
+    pub name: Option<String>,
     pub target_id: Oid,
     pub target_type: Option<ObjectType>,
-    pub tagger: Option<Signature<'a>>,
-    pub message: Option<&'a str>,
+    pub tagger: Option<String>,
+    pub message: Option<String>,
 }
 
 // Function to insert a Git commit into the SQLite database
@@ -38,14 +36,9 @@ fn insert_commit(conn: &Connection, commit: &GitCommit) -> Result<()> {
 }
 
 // Function to insert a Git tag into the SQLite database
-fn insert_tag(conn: &Connection, tag: &GitTag) -> Result<()> {
+fn insert_tag(conn: &Connection, tag: GitTag) -> Result<()> {
     let target_type = match tag.target_type {
         Some(t) => t.to_string(),
-        _ => String::from("None"),
-    };
-
-    let tagger = match &tag.tagger {
-        Some(t) => t.name().unwrap_or("None").to_string(),
         _ => String::from("None"),
     };
 
@@ -55,12 +48,12 @@ fn insert_tag(conn: &Connection, tag: &GitTag) -> Result<()> {
         [
             // Store only the first 7 characters of the tag id
             tag.id.to_string().chars().take(7).collect(),
-            tag.name.unwrap_or("None").to_string(),
+            tag.name.unwrap_or(String::from("None")),
             // Store only the first 7 characters of the tag target id
             tag.target_id.to_string().chars().take(7).collect(),
             target_type,
-            tagger,
-            tag.message.unwrap_or("None").to_string(),
+            tag.tagger.unwrap_or(String::from("None")),
+            tag.message.unwrap_or(String::from("None")),
         ],
     )?;
 
@@ -68,7 +61,7 @@ fn insert_tag(conn: &Connection, tag: &GitTag) -> Result<()> {
 }
 
 // Function to initialize the SQLite database with Git commit data
-fn init_db(repo: &Repository, revwalk: Revwalk, tags: Vec<GitTag>) -> Result<Connection, SqlError> {
+fn init_db(repo: &Repository, revwalk: Revwalk) -> Result<Connection, SqlError> {
     // Open an in-memory SQLite database
     let conn = Connection::open_in_memory()?;
 
@@ -104,10 +97,48 @@ fn init_db(repo: &Repository, revwalk: Revwalk, tags: Vec<GitTag>) -> Result<Con
         insert_commit(&conn, &commit)?;
     }
 
+    // let tag_sql_error: Some(SqlError) = None;
+
     // Insert tags
-    for tag in tags {
-        insert_tag(&conn, &tag)?;
-    }
+    repo.tag_foreach(|id, name| {
+        let tag = repo.find_tag(id);
+
+        match tag {
+            // Annotated tag
+            Ok(t) => {
+                insert_tag(
+                    &conn,
+                    GitTag {
+                        id: t.id(),
+                        name: t.name().map(|n| n.to_string()),
+                        target_id: t.target_id(),
+                        target_type: t.target_type(),
+                        tagger: t
+                            .tagger()
+                            .map(|tagger| tagger.name().unwrap_or("None").to_string()),
+                        message: t.message().map(|m| m.to_string()),
+                    },
+                ).unwrap();
+            }
+            // Lightweight tag
+            _ => {
+                insert_tag(
+                    &conn,
+                    GitTag {
+                        id,
+                        name: Some(std::str::from_utf8(name).unwrap_or("None").to_string()),
+                        target_id: id,
+                        target_type: Some(ObjectType::Commit),
+                        tagger: None,
+                        message: None,
+                    },
+                ).unwrap();
+            }
+        };
+
+        // Continue iterating over tags
+        true
+    }).unwrap();
 
     Ok(conn)
 }
@@ -162,41 +193,6 @@ fn run_sql_query(conn: &Connection, sql: &str) -> Result<(), SqlError> {
     Ok(())
 }
 
-// Function to get all tags
-fn get_all_tags(repo: &Repository) -> Result<Vec<GitTag>, GitError> {
-    let mut tags = Vec::new();
-
-    repo.tag_foreach(|id, name| {
-        let tag = repo.find_tag(id);
-
-        match tag {
-            // Annotated tag
-            Ok(t) => tags.push(GitTag {
-                id: t.id(),
-                name: t.name(),
-                target_id: t.target_id(),
-                target_type: t.target_type(),
-                tagger: t.tagger(),
-                message: t.message(),
-            }),
-            // Lightweight tag
-            _ => tags.push(GitTag {
-                id,
-                name: Some(std::str::from_utf8(&name.to_owned()).unwrap_or("None")),
-                target_id: id,
-                target_type: Some(ObjectType::Commit),
-                tagger: None,
-                message: None,
-            }),
-        };
-
-        // Continue iterating over tags
-        true
-    })?;
-
-    Ok(tags)
-}
-
 // Constants for the terminal prompt and the initial SQL query
 const TERMINAL_PROMPT: &str = ">> ";
 const INIT_SQL_QUERY: &str = "SELECT * FROM COMMITS ORDER BY date DESC LIMIT 1;";
@@ -212,11 +208,8 @@ fn main() -> Result<(), String> {
     let mut revwalk = repo.revwalk().expect("Failed to create revwalk");
     revwalk.push_head().expect("Failed to push HEAD OID");
 
-    // Get all tags
-    let tags = get_all_tags(&repo).map_err(|err| format!("Cannot get tags. {}", err))?;
-
     // Initialize the SQLite database with Git commit data
-    let conn = init_db(&repo, revwalk, tags).map_err(|err| format!("DB error. {}", err))?;
+    let conn = init_db(&repo, revwalk).map_err(|err| format!("DB error. {}", err))?;
 
     // Run the initial SQL query and display the result
     println!("{}{}", TERMINAL_PROMPT, INIT_SQL_QUERY);

@@ -1,9 +1,21 @@
 use chrono::{TimeZone, Utc};
 use comfy_table::Table;
 use comfy_table::{presets::UTF8_FULL, ContentArrangement};
-use git2::{Commit as GitCommit, Repository, Revwalk};
+use git2::{
+    Commit as GitCommit, Error as GitError, ObjectType, Oid, Repository, Revwalk, Signature,
+};
 use rusqlite::{types::Value, Connection, Error as SqlError, Result};
 use std::io::{stdin, stdout, Write};
+
+// Struct to support both annotated and lightweight git tags
+struct GitTag<'a> {
+    pub id: Oid,
+    pub name: Option<&'a str>,
+    pub target_id: Oid,
+    pub target_type: Option<ObjectType>,
+    pub tagger: Option<Signature<'a>>,
+    pub message: Option<&'a str>,
+}
 
 // Function to insert a Git commit into the SQLite database
 fn insert_commit(conn: &Connection, commit: &GitCommit) -> Result<()> {
@@ -25,8 +37,38 @@ fn insert_commit(conn: &Connection, commit: &GitCommit) -> Result<()> {
     Ok(())
 }
 
+// Function to insert a Git tag into the SQLite database
+fn insert_tag(conn: &Connection, tag: &GitTag) -> Result<()> {
+    let target_type = match tag.target_type {
+        Some(t) => t.to_string(),
+        _ => String::from("None"),
+    };
+
+    let tagger = match &tag.tagger {
+        Some(t) => t.name().unwrap_or("None").to_string(),
+        _ => String::from("None"),
+    };
+
+    // Execute the SQL INSERT statement
+    conn.execute(
+        "INSERT INTO tags (id, name, target_id, target_type, tagger, message) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        [
+            // Store only the first 7 characters of the tag id
+            tag.id.to_string().chars().take(7).collect(),
+            tag.name.unwrap_or("None").to_string(),
+            // Store only the first 7 characters of the tag target id
+            tag.target_id.to_string().chars().take(7).collect(),
+            target_type,
+            tagger,
+            tag.message.unwrap_or("None").to_string(),
+        ],
+    )?;
+
+    Ok(())
+}
+
 // Function to initialize the SQLite database with Git commit data
-fn init_db(repo: &Repository, revwalk: Revwalk) -> Result<Connection, SqlError> {
+fn init_db(repo: &Repository, revwalk: Revwalk, tags: Vec<GitTag>) -> Result<Connection, SqlError> {
     // Open an in-memory SQLite database
     let conn = Connection::open_in_memory()?;
 
@@ -41,12 +83,30 @@ fn init_db(repo: &Repository, revwalk: Revwalk) -> Result<Connection, SqlError> 
         (),
     )?;
 
+    // Create the 'tags' table
+    conn.execute(
+        "CREATE TABLE tags (
+                        id          TEXT PRIMARY KEY,
+                        name        TEXT NOT NULL,
+                        target_id   TEXT NOT NULL,
+                        target_type TEXT NOT NULL,
+                        tagger      TEXT NOT NULL,
+                        message     TEXT NOT NULL
+                    )",
+        (),
+    )?;
+
     // Iterate over Git commit history and insert each commit into the database
     for commit_id in revwalk {
         let commit_id = commit_id.expect("Failed to get commit ID");
         let commit = repo.find_commit(commit_id).expect("Failed to find commit");
 
         insert_commit(&conn, &commit)?;
+    }
+
+    // Insert tags
+    for tag in tags {
+        insert_tag(&conn, &tag)?;
     }
 
     Ok(conn)
@@ -74,6 +134,7 @@ fn run_sql_query(conn: &Connection, sql: &str) -> Result<(), SqlError> {
     table
         .load_preset(UTF8_FULL)
         .set_content_arrangement(ContentArrangement::Dynamic)
+        // TODO: make table width configurable
         .set_width(80)
         .set_header(&column_names);
 
@@ -101,6 +162,41 @@ fn run_sql_query(conn: &Connection, sql: &str) -> Result<(), SqlError> {
     Ok(())
 }
 
+// Function to get all tags
+fn get_all_tags(repo: &Repository) -> Result<Vec<GitTag>, GitError> {
+    let mut tags = Vec::new();
+
+    repo.tag_foreach(|id, name| {
+        let tag = repo.find_tag(id);
+
+        match tag {
+            // Annotated tag
+            Ok(t) => tags.push(GitTag {
+                id: t.id(),
+                name: t.name(),
+                target_id: t.target_id(),
+                target_type: t.target_type(),
+                tagger: t.tagger(),
+                message: t.message(),
+            }),
+            // Lightweight tag
+            _ => tags.push(GitTag {
+                id,
+                name: Some(std::str::from_utf8(&name.to_owned()).unwrap_or("None")),
+                target_id: id,
+                target_type: Some(ObjectType::Commit),
+                tagger: None,
+                message: None,
+            }),
+        };
+
+        // Continue iterating over tags
+        true
+    })?;
+
+    Ok(tags)
+}
+
 // Constants for the terminal prompt and the initial SQL query
 const TERMINAL_PROMPT: &str = ">> ";
 const INIT_SQL_QUERY: &str = "SELECT * FROM COMMITS ORDER BY date DESC LIMIT 1;";
@@ -116,8 +212,11 @@ fn main() -> Result<(), String> {
     let mut revwalk = repo.revwalk().expect("Failed to create revwalk");
     revwalk.push_head().expect("Failed to push HEAD OID");
 
+    // Get all tags
+    let tags = get_all_tags(&repo).map_err(|err| format!("Cannot get tags. {}", err))?;
+
     // Initialize the SQLite database with Git commit data
-    let conn = init_db(&repo, revwalk).map_err(|err| format!("DB error. {}", err))?;
+    let conn = init_db(&repo, revwalk, tags).map_err(|err| format!("DB error. {}", err))?;
 
     // Run the initial SQL query and display the result
     println!("{}{}", TERMINAL_PROMPT, INIT_SQL_QUERY);

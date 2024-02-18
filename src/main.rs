@@ -148,7 +148,8 @@ fn value_to_string(value: Value) -> String {
     match value {
         Value::Integer(i) => i.to_string(),
         Value::Real(f) => f.to_string(),
-        Value::Text(s) => s,
+        // Replace \r\n with \n, as \r\n causes formatting issues with table
+        Value::Text(s) => s.replace("\r\n", "\n"),
         Value::Blob(_) => String::from("Blob"),
         Value::Null => String::from("NULL"),
     }

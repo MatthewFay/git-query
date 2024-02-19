@@ -138,7 +138,7 @@ fn init_db(repo: &Repository, revwalk: Revwalk) -> Result<Connection, SqlError> 
         insert_commit(&conn, &commit)?;
     }
 
-    // let tag_sql_error: Some(SqlError) = None;
+    let mut tag_sql_error: Option<SqlError> = None;
 
     // Insert tags
     repo.tag_foreach(|id, name| {
@@ -147,7 +147,10 @@ fn init_db(repo: &Repository, revwalk: Revwalk) -> Result<Connection, SqlError> 
         match tag {
             // Annotated tag
             Ok(t) => {
-                insert_tag(&conn, GitTag::Annotated(t)).unwrap();
+                if let Err(err) = insert_tag(&conn, GitTag::Annotated(t)) {
+                    tag_sql_error = Some(err);
+                    return false; // Stop iterating over tags
+                }
             }
             // Lightweight tag
             _ => {
@@ -157,22 +160,28 @@ fn init_db(repo: &Repository, revwalk: Revwalk) -> Result<Connection, SqlError> 
                     // Remove "refs/tags/" prefix, if present
                     .map(|s| s.strip_prefix("refs/tags/").unwrap_or(&s).to_string());
 
-                insert_tag(
+                if let Err(err) = insert_tag(
                     &conn,
                     GitTag::Lightweight {
                         id,
                         name: n,
                         target_id: id,
                     },
-                )
-                .unwrap();
+                ) {
+                    tag_sql_error = Some(err);
+                    return false; // Stop iterating over tags
+                }
             }
         };
 
         // Continue iterating over tags
         true
     })
-    .unwrap();
+    .expect("Tags should be iterable");
+
+    if let Some(tag_sql_err) = tag_sql_error {
+        return Err(tag_sql_err);
+    }
 
     Ok(conn)
 }

@@ -1,18 +1,19 @@
 use chrono::{TimeZone, Utc};
 use comfy_table::Table;
 use comfy_table::{presets::UTF8_FULL, ContentArrangement};
-use git2::{Commit as GitCommit, ObjectType, Oid, Repository, Revwalk};
+use git2::{Commit as GitCommit, ObjectType, Oid, Repository, Revwalk, Tag};
+use rusqlite::params;
 use rusqlite::{types::Value, Connection, Error as SqlError, Result};
 use std::io::{stdin, stdout, Write};
 
 // Enum to support both annotated and lightweight git tags
-struct GitTag {
-    pub id: Oid,
-    pub name: Option<String>,
-    pub target_id: Oid,
-    pub target_type: Option<ObjectType>,
-    pub tagger: Option<String>,
-    pub message: Option<String>,
+enum GitTag<'a> {
+    Annotated(Tag<'a>),
+    Lightweight {
+        id: Oid,
+        name: Option<String>,
+        target_id: Oid,
+    },
 }
 
 // Function to insert a Git commit into the SQLite database
@@ -23,12 +24,12 @@ fn insert_commit(conn: &Connection, commit: &GitCommit) -> Result<()> {
     // Execute the SQL INSERT statement
     conn.execute(
         "INSERT INTO commits (id, author, date, message) VALUES (?1, ?2, ?3, ?4)",
-        [
+        params![
             // Store only the first 7 characters of the commit id
-            commit.id().to_string().chars().take(7).collect(),
-            commit.author().name().unwrap_or("None").to_string(),
+            commit.id().to_string().chars().take(7).collect::<String>(),
+            commit.author().name(),
             datetime.unwrap().to_string(),
-            commit.message().unwrap_or("None").to_string(),
+            commit.message(),
         ],
     )?;
 
@@ -37,25 +38,45 @@ fn insert_commit(conn: &Connection, commit: &GitCommit) -> Result<()> {
 
 // Function to insert a Git tag into the SQLite database
 fn insert_tag(conn: &Connection, tag: GitTag) -> Result<()> {
-    let target_type = match tag.target_type {
-        Some(t) => t.to_string(),
-        _ => String::from("None"),
-    };
+    match tag {
+        GitTag::Annotated(t) => {
+            let tagger: Option<String> = t
+                .tagger()
+                .map(|sig| sig.name().map(|name| name.to_string()))
+                .flatten();
 
-    // Execute the SQL INSERT statement
-    conn.execute(
-        "INSERT INTO tags (id, name, target_id, target_type, tagger, message) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        [
-            // Store only the first 7 characters of the tag id
-            tag.id.to_string().chars().take(7).collect(),
-            tag.name.unwrap_or(String::from("None")),
-            // Store only the first 7 characters of the tag target id
-            tag.target_id.to_string().chars().take(7).collect(),
-            target_type,
-            tag.tagger.unwrap_or(String::from("None")),
-            tag.message.unwrap_or(String::from("None")),
-        ],
-    )?;
+            conn.execute(
+                "INSERT INTO tags (id, name, target_id, target_type, tagger, message) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    // Store only the first 7 characters of the tag id
+                    t.id().to_string().chars().take(7).collect::<String>(),
+                    t.name(),
+                    // Store only the first 7 characters of the tag target id
+                    t.target_id().to_string().chars().take(7).collect::<String>(),
+                    t.target_type().map(|t_type| t_type.to_string()),
+                    tagger,
+                    t.message(),
+                ],
+            )?;
+        }
+        GitTag::Lightweight {
+            id,
+            name,
+            target_id,
+        } => {
+            conn.execute(
+                "INSERT INTO tags (id, name, target_id, target_type) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    // Store only the first 7 characters of the tag id
+                    id.to_string().chars().take(7).collect::<String>(),
+                    name,
+                    // Store only the first 7 characters of the tag target id
+                    target_id.to_string().chars().take(7).collect::<String>(),
+                    ObjectType::Commit.to_string(),
+                ],
+            )?;
+        }
+    }
 
     Ok(())
 }
@@ -69,9 +90,9 @@ fn init_db(repo: &Repository, revwalk: Revwalk) -> Result<Connection, SqlError> 
     conn.execute(
         "CREATE TABLE commits (
                         id       TEXT PRIMARY KEY,
-                        author   TEXT NOT NULL,
+                        author   TEXT,
                         date     TEXT NOT NULL,
-                        message  TEXT NOT NULL
+                        message  TEXT
                     )",
         (),
     )?;
@@ -80,11 +101,11 @@ fn init_db(repo: &Repository, revwalk: Revwalk) -> Result<Connection, SqlError> 
     conn.execute(
         "CREATE TABLE tags (
                         id          TEXT PRIMARY KEY,
-                        name        TEXT NOT NULL,
+                        name        TEXT,
                         target_id   TEXT NOT NULL,
-                        target_type TEXT NOT NULL,
-                        tagger      TEXT NOT NULL,
-                        message     TEXT NOT NULL
+                        target_type TEXT,
+                        tagger      TEXT,
+                        message     TEXT
                     )",
         (),
     )?;
@@ -106,39 +127,26 @@ fn init_db(repo: &Repository, revwalk: Revwalk) -> Result<Connection, SqlError> 
         match tag {
             // Annotated tag
             Ok(t) => {
-                insert_tag(
-                    &conn,
-                    GitTag {
-                        id: t.id(),
-                        name: t.name().map(|n| n.to_string()),
-                        target_id: t.target_id(),
-                        target_type: t.target_type(),
-                        tagger: t
-                            .tagger()
-                            .map(|tagger| tagger.name().unwrap_or("None").to_string()),
-                        message: t.message().map(|m| m.to_string()),
-                    },
-                ).unwrap();
+                insert_tag(&conn, GitTag::Annotated(t)).unwrap();
             }
             // Lightweight tag
             _ => {
                 insert_tag(
                     &conn,
-                    GitTag {
+                    GitTag::Lightweight {
                         id,
-                        name: Some(std::str::from_utf8(name).unwrap_or("None").to_string()),
+                        name: std::str::from_utf8(name).map(|s| s.to_string()).ok(),
                         target_id: id,
-                        target_type: Some(ObjectType::Commit),
-                        tagger: None,
-                        message: None,
                     },
-                ).unwrap();
+                )
+                .unwrap();
             }
         };
 
         // Continue iterating over tags
         true
-    }).unwrap();
+    })
+    .unwrap();
 
     Ok(conn)
 }

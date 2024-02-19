@@ -1,7 +1,7 @@
 use chrono::{TimeZone, Utc};
 use comfy_table::Table;
 use comfy_table::{presets::UTF8_FULL, ContentArrangement};
-use git2::{Commit as GitCommit, ObjectType, Oid, Repository, Revwalk, Tag};
+use git2::{Commit as GitCommit, ObjectType, Oid, Repository, Revwalk, Tag, Time};
 use rusqlite::params;
 use rusqlite::{types::Value, Connection, Error as SqlError, Result};
 use std::io::{stdin, stdout, Write};
@@ -36,6 +36,19 @@ fn insert_commit(conn: &Connection, commit: &GitCommit) -> Result<()> {
     Ok(())
 }
 
+// Function to remove PGP signature from message
+fn remove_pgp_signature(message: &str) -> String {
+    let begin_pgp_marker = "-----BEGIN PGP SIGNATURE-----";
+
+    // Find the position of the PGP marker
+    let end_pos = message.find(begin_pgp_marker).unwrap_or(0);
+
+    // Take a substring ending with the position of the PGP marker
+    let modified_message = message[..end_pos].trim().to_string();
+
+    modified_message
+}
+
 // Function to insert a Git tag into the SQLite database
 fn insert_tag(conn: &Connection, tag: GitTag) -> Result<()> {
     match tag {
@@ -45,8 +58,13 @@ fn insert_tag(conn: &Connection, tag: GitTag) -> Result<()> {
                 .map(|sig| sig.name().map(|name| name.to_string()))
                 .flatten();
 
+            let date = t
+                .tagger()
+                .map(|sig| sig.when())
+                .map(|time: Time| Utc.timestamp_opt(time.seconds(), 0).unwrap().to_string());
+
             conn.execute(
-                "INSERT INTO tags (id, name, target_id, target_type, tagger, message) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO tags (id, name, target_id, target_type, tagger, date, message) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     // Store only the first 7 characters of the tag id
                     t.id().to_string().chars().take(7).collect::<String>(),
@@ -55,7 +73,8 @@ fn insert_tag(conn: &Connection, tag: GitTag) -> Result<()> {
                     t.target_id().to_string().chars().take(7).collect::<String>(),
                     t.target_type().map(|t_type| t_type.to_string()),
                     tagger,
-                    t.message(),
+                    date,
+                    t.message().map(remove_pgp_signature),
                 ],
             )?;
         }
@@ -105,6 +124,7 @@ fn init_db(repo: &Repository, revwalk: Revwalk) -> Result<Connection, SqlError> 
                         target_id   TEXT NOT NULL,
                         target_type TEXT,
                         tagger      TEXT,
+                        date        TEXT,
                         message     TEXT
                     )",
         (),
@@ -181,7 +201,7 @@ fn run_sql_query(conn: &Connection, sql: &str) -> Result<(), SqlError> {
         .load_preset(UTF8_FULL)
         .set_content_arrangement(ContentArrangement::Dynamic)
         // TODO: make table width configurable
-        .set_width(80)
+        // .set_width(80)
         .set_header(&column_names);
 
     // Execute the SQL query

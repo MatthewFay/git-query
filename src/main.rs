@@ -239,7 +239,7 @@ fn run_sql_query(conn: &Connection, sql: &str) -> Result<(), SqlError> {
 
 // Constants for the terminal prompt and the initial SQL query
 const TERMINAL_PROMPT: &str = ">> ";
-const INIT_SQL_QUERY: &str = "SELECT * FROM COMMITS ORDER BY date DESC LIMIT 1;";
+const INIT_SQL_QUERY: &str = "SELECT * FROM commits ORDER BY date DESC LIMIT 1;";
 
 fn main() -> Result<(), String> {
     // TODO: take repo_path as an option

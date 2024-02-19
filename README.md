@@ -26,13 +26,34 @@ cargo install git-query
    exit
    ```
 
+### Tables
+
+See below for information on the SQL tables that can be queried, and the data within.
+
+#### commits
+
+* `id`: Commit id
+* `author`: Author of the commit
+* `date`: Datetime of the commit
+* `message`: Commit message
+
+#### tags
+
+* `id`: Tag id
+* `name`: The tag name
+* `target_id`: The tag target id (e.g., commit id)
+* `target_type`: The type of target (e.g., commit)
+* `tagger`: Who created the tag
+* `date`: Datetime of the tag
+* `message`: The tag message. Any PGP signatures are removed
+
 ### Example queries
 
 These queries use the [serde repo](https://github.com/serde-rs/serde).
 
 #### Get most recent commit
 ```
->> SELECT * FROM COMMITS ORDER BY date DESC LIMIT 1;
+>> SELECT * FROM commits ORDER BY date DESC LIMIT 1;
 ┌─────────┬──────────────┬─────────────────────────┬───────────────────────────┐
 │ id      ┆ author       ┆ date                    ┆ message                   │
 ╞═════════╪══════════════╪═════════════════════════╪═══════════════════════════╡
@@ -47,7 +68,7 @@ Rows returned: 1
 
 #### Get list of contributors
 ```
->> SELECT DISTINCT(author) FROM COMMITS ORDER BY author LIMIT 5;
+>> SELECT DISTINCT(author) FROM commits ORDER BY author LIMIT 5;
 ┌───────────────────┐
 │ author            │
 ╞═══════════════════╡
@@ -66,7 +87,7 @@ Rows returned: 5
 
 #### Get last commit by author
 ```
->> SELECT * FROM COMMITS WHERE author = 'Adam Crume' ORDER BY date DESC LIMIT 1;
+>> SELECT * FROM commits WHERE author = 'Adam Crume' ORDER BY date DESC LIMIT 1;
 ┌─────────┬────────────┬─────────────────────────┬─────────────────────────────┐
 │ id      ┆ author     ┆ date                    ┆ message                     │
 ╞═════════╪════════════╪═════════════════════════╪═════════════════════════════╡
@@ -79,7 +100,7 @@ Rows returned: 1
 
 #### Get count of commits
 ```
->> SELECT COUNT(*) FROM COMMITS;
+>> SELECT COUNT(*) FROM commits;
 ┌──────────┐
 │ COUNT(*) │
 ╞══════════╡
@@ -90,7 +111,7 @@ Rows returned: 1
 
 #### Get commits with message with specific pattern
 ```
->> SELECT * FROM COMMITS WHERE message LIKE '%quote! macro%'
+>> SELECT * FROM commits WHERE message LIKE '%quote! macro%'
 ┌─────────┬────────────┬─────────────────────────┬─────────────────────────────┐
 │ id      ┆ author     ┆ date                    ┆ message                     │
 ╞═════════╪════════════╪═════════════════════════╪═════════════════════════════╡
@@ -123,6 +144,38 @@ Rows returned: 1
 │         ┆               ┆                         ┆ Fixes #1933              │
 │         ┆               ┆                         ┆                          │
 └─────────┴───────────────┴─────────────────────────┴──────────────────────────┘
+Rows returned: 1
+```
+
+#### Get most recent tag
+
+```
+>> SELECT * FROM tags ORDER BY DATE DESC LIMIT 1;
+┌─────────┬──────────┬───────────┬───────────┬───────────┬──────────┬──────────┐
+│ id      ┆ name     ┆ target_id ┆ target_ty ┆ tagger    ┆ date     ┆ message  │
+│         ┆          ┆           ┆ pe        ┆           ┆          ┆          │
+╞═════════╪══════════╪═══════════╪═══════════╪═══════════╪══════════╪══════════╡
+│ 9ed62c3 ┆ v1.0.196 ┆ ede9762   ┆ commit    ┆ David     ┆ 2024-01- ┆ Release  │
+│         ┆          ┆           ┆           ┆ Tolnay    ┆ 26       ┆ 1.0.196  │
+│         ┆          ┆           ┆           ┆           ┆ 22:00:35 ┆          │
+│         ┆          ┆           ┆           ┆           ┆ UTC      ┆          │
+└─────────┴──────────┴───────────┴───────────┴───────────┴──────────┴──────────┘
+Rows returned: 1
+```
+
+#### Get most recent tag with commit info
+
+```
+>> SELECT commits.*, tags.id AS tag_id, tags.date AS tag_date, tags.message AS tag_message FROM commits INNER JOIN tags ON commits.id = tags.target_id ORDER BY tags.date DESC LIMIT 1;
+┌─────────┬───────────┬───────────┬───────────┬─────────┬───────────┬──────────┐
+│ id      ┆ author    ┆ date      ┆ message   ┆ tag_id  ┆ tag_date  ┆ tag_mess │
+│         ┆           ┆           ┆           ┆         ┆           ┆ age      │
+╞═════════╪═══════════╪═══════════╪═══════════╪═════════╪═══════════╪══════════╡
+│ ede9762 ┆ David     ┆ 2024-01-2 ┆ Release   ┆ 9ed62c3 ┆ 2024-01-2 ┆ Release  │
+│         ┆ Tolnay    ┆ 6         ┆ 1.0.196   ┆         ┆ 6         ┆ 1.0.196  │
+│         ┆           ┆ 22:00:35  ┆           ┆         ┆ 22:00:35  ┆          │
+│         ┆           ┆ UTC       ┆           ┆         ┆ UTC       ┆          │
+└─────────┴───────────┴───────────┴───────────┴─────────┴───────────┴──────────┘
 Rows returned: 1
 ```
 

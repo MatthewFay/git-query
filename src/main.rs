@@ -131,11 +131,17 @@ fn init_db(repo: &Repository, revwalk: Revwalk) -> Result<Connection, SqlError> 
             }
             // Lightweight tag
             _ => {
+                let n: Option<String> = std::str::from_utf8(name)
+                    .map(|s| s.to_string())
+                    .ok()
+                    // Remove "refs/tags/" prefix, if present
+                    .map(|s| s.strip_prefix("refs/tags/").unwrap_or(&s).to_string());
+
                 insert_tag(
                     &conn,
                     GitTag::Lightweight {
                         id,
-                        name: std::str::from_utf8(name).map(|s| s.to_string()).ok(),
+                        name: n,
                         target_id: id,
                     },
                 )

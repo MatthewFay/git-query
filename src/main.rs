@@ -41,12 +41,16 @@ fn remove_pgp_signature(message: &str) -> String {
     let begin_pgp_marker = "-----BEGIN PGP SIGNATURE-----";
 
     // Find the position of the PGP marker
-    let end_pos = message.find(begin_pgp_marker).unwrap_or(0);
+    let end_pos = message.find(begin_pgp_marker);
 
-    // Take a substring ending with the position of the PGP marker
-    let modified_message = message[..end_pos].trim().to_string();
+    if let Some(e_pos) = end_pos {
+        // Take a substring ending with the position of the PGP marker
+        let modified_message = message[..e_pos].trim().to_string();
 
-    modified_message
+        modified_message
+    } else {
+        message.to_string()
+    }
 }
 
 // Function to insert a Git tag into the SQLite database

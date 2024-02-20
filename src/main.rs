@@ -1,7 +1,9 @@
 use chrono::{TimeZone, Utc};
 use comfy_table::Table;
 use comfy_table::{presets::UTF8_FULL, ContentArrangement};
-use git2::{Commit as GitCommit, ObjectType, Oid, Repository, Revwalk, Tag, Time};
+use git2::{
+    Branch, BranchType, Commit as GitCommit, ObjectType, Oid, Repository, Revwalk, Tag, Time,
+};
 use rusqlite::params;
 use rusqlite::{types::Value, Connection, Error as SqlError, Result};
 use std::io::{stdin, stdout, Write};
@@ -103,6 +105,30 @@ fn insert_tag(conn: &Connection, tag: GitTag) -> Result<()> {
     Ok(())
 }
 
+// Function to insert a Git branch into the SQLite database
+fn insert_branch(conn: &Connection, branch: Branch, branch_type: BranchType) -> Result<()> {
+    let reference = branch.get();
+
+    conn.execute(
+        "INSERT INTO branches (name, type, last_commit) VALUES (?1, ?2, ?3)",
+        params![
+            branch.name().ok(),
+            match branch_type {
+                BranchType::Local => "local",
+                BranchType::Remote => "remote",
+            },
+            reference.peel_to_commit().ok().map(|c| c
+                .id()
+                .to_string()
+                .chars()
+                .take(7)
+                .collect::<String>())
+        ],
+    )?;
+
+    Ok(())
+}
+
 // Function to initialize the SQLite database with Git commit data
 fn init_db(repo: &Repository, revwalk: Revwalk) -> Result<Connection, SqlError> {
     // Open an in-memory SQLite database
@@ -129,6 +155,16 @@ fn init_db(repo: &Repository, revwalk: Revwalk) -> Result<Connection, SqlError> 
                         tagger      TEXT,
                         date        TEXT,
                         message     TEXT
+                    )",
+        (),
+    )?;
+
+    // Create the 'branches' table
+    conn.execute(
+        "CREATE TABLE branches (
+                        name        TEXT,
+                        type        TEXT,
+                        last_commit TEXT
                     )",
         (),
     )?;
@@ -184,6 +220,12 @@ fn init_db(repo: &Repository, revwalk: Revwalk) -> Result<Connection, SqlError> 
 
     if let Some(tag_sql_err) = tag_sql_error {
         return Err(tag_sql_err);
+    }
+
+    // Insert branches
+    for branch in repo.branches(None).expect("Branches should be iterable") {
+        let b = branch.expect("Branch should be valid");
+        insert_branch(&conn, b.0, b.1)?;
     }
 
     Ok(conn)

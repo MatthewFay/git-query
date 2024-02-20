@@ -55,8 +55,7 @@ fn insert_tag(conn: &Connection, tag: GitTag) -> Result<()> {
         GitTag::Annotated(t) => {
             let tagger: Option<String> = t
                 .tagger()
-                .map(|sig| sig.name().map(|name| name.to_string()))
-                .flatten();
+                .and_then(|sig| sig.name().map(|name| name.to_string()));
 
             let date = t
                 .tagger()

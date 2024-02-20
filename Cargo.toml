@@ -1,6 +1,6 @@
 [package]
 name = "git-query"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Run SQL against git history"
 documentation = "https://github.com/MatthewFay/git-query"

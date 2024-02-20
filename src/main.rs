@@ -1,9 +1,20 @@
 use chrono::{TimeZone, Utc};
 use comfy_table::Table;
 use comfy_table::{presets::UTF8_FULL, ContentArrangement};
-use git2::{Commit as GitCommit, Repository, Revwalk};
+use git2::{Commit as GitCommit, ObjectType, Oid, Repository, Revwalk, Tag, Time};
+use rusqlite::params;
 use rusqlite::{types::Value, Connection, Error as SqlError, Result};
 use std::io::{stdin, stdout, Write};
+
+// Enum to support both annotated and lightweight git tags
+enum GitTag<'a> {
+    Annotated(Tag<'a>),
+    Lightweight {
+        id: Oid,
+        name: Option<String>,
+        target_id: Oid,
+    },
+}
 
 // Function to insert a Git commit into the SQLite database
 fn insert_commit(conn: &Connection, commit: &GitCommit) -> Result<()> {
@@ -13,14 +24,81 @@ fn insert_commit(conn: &Connection, commit: &GitCommit) -> Result<()> {
     // Execute the SQL INSERT statement
     conn.execute(
         "INSERT INTO commits (id, author, date, message) VALUES (?1, ?2, ?3, ?4)",
-        [
+        params![
             // Store only the first 7 characters of the commit id
-            commit.id().to_string().chars().take(7).collect(),
-            commit.author().name().unwrap_or("None").to_string(),
+            commit.id().to_string().chars().take(7).collect::<String>(),
+            commit.author().name(),
             datetime.unwrap().to_string(),
-            commit.message().unwrap_or("None").to_string(),
+            commit.message(),
         ],
     )?;
+
+    Ok(())
+}
+
+// Function to remove PGP signature from message
+fn remove_pgp_signature(message: &str) -> String {
+    let begin_pgp_marker = "-----BEGIN PGP SIGNATURE-----";
+
+    // Find the position of the PGP marker
+    let end_pos = message.find(begin_pgp_marker);
+
+    if let Some(e_pos) = end_pos {
+        // Take a substring ending with the position of the PGP marker
+        let modified_message = message[..e_pos].trim().to_string();
+
+        modified_message
+    } else {
+        message.to_string()
+    }
+}
+
+// Function to insert a Git tag into the SQLite database
+fn insert_tag(conn: &Connection, tag: GitTag) -> Result<()> {
+    match tag {
+        GitTag::Annotated(t) => {
+            let tagger: Option<String> = t
+                .tagger()
+                .and_then(|sig| sig.name().map(|name| name.to_string()));
+
+            let date = t
+                .tagger()
+                .map(|sig| sig.when())
+                .map(|time: Time| Utc.timestamp_opt(time.seconds(), 0).unwrap().to_string());
+
+            conn.execute(
+                "INSERT INTO tags (id, name, target_id, target_type, tagger, date, message) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    // Store only the first 7 characters of the tag id
+                    t.id().to_string().chars().take(7).collect::<String>(),
+                    t.name(),
+                    // Store only the first 7 characters of the tag target id
+                    t.target_id().to_string().chars().take(7).collect::<String>(),
+                    t.target_type().map(|t_type| t_type.to_string()),
+                    tagger,
+                    date,
+                    t.message().map(remove_pgp_signature),
+                ],
+            )?;
+        }
+        GitTag::Lightweight {
+            id,
+            name,
+            target_id,
+        } => {
+            conn.execute(
+                "INSERT INTO tags (id, name, target_id, target_type) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    // Store only the first 7 characters of the tag id
+                    id.to_string().chars().take(7).collect::<String>(),
+                    name,
+                    // Store only the first 7 characters of the tag target id
+                    target_id.to_string().chars().take(7).collect::<String>(),
+                    ObjectType::Commit.to_string(),
+                ],
+            )?;
+        }
+    }
 
     Ok(())
 }
@@ -34,9 +112,23 @@ fn init_db(repo: &Repository, revwalk: Revwalk) -> Result<Connection, SqlError> 
     conn.execute(
         "CREATE TABLE commits (
                         id       TEXT PRIMARY KEY,
-                        author   TEXT NOT NULL,
+                        author   TEXT,
                         date     TEXT NOT NULL,
-                        message  TEXT NOT NULL
+                        message  TEXT
+                    )",
+        (),
+    )?;
+
+    // Create the 'tags' table
+    conn.execute(
+        "CREATE TABLE tags (
+                        id          TEXT PRIMARY KEY,
+                        name        TEXT,
+                        target_id   TEXT NOT NULL,
+                        target_type TEXT,
+                        tagger      TEXT,
+                        date        TEXT,
+                        message     TEXT
                     )",
         (),
     )?;
@@ -49,6 +141,51 @@ fn init_db(repo: &Repository, revwalk: Revwalk) -> Result<Connection, SqlError> 
         insert_commit(&conn, &commit)?;
     }
 
+    let mut tag_sql_error: Option<SqlError> = None;
+
+    // Insert tags
+    repo.tag_foreach(|id, name| {
+        let tag = repo.find_tag(id);
+
+        match tag {
+            // Annotated tag
+            Ok(t) => {
+                if let Err(err) = insert_tag(&conn, GitTag::Annotated(t)) {
+                    tag_sql_error = Some(err);
+                    return false; // Stop iterating over tags
+                }
+            }
+            // Lightweight tag
+            _ => {
+                let n: Option<String> = std::str::from_utf8(name)
+                    .map(|s| s.to_string())
+                    .ok()
+                    // Remove "refs/tags/" prefix, if present
+                    .map(|s| s.strip_prefix("refs/tags/").unwrap_or(&s).to_string());
+
+                if let Err(err) = insert_tag(
+                    &conn,
+                    GitTag::Lightweight {
+                        id,
+                        name: n,
+                        target_id: id,
+                    },
+                ) {
+                    tag_sql_error = Some(err);
+                    return false; // Stop iterating over tags
+                }
+            }
+        };
+
+        // Continue iterating over tags
+        true
+    })
+    .expect("Tags should be iterable");
+
+    if let Some(tag_sql_err) = tag_sql_error {
+        return Err(tag_sql_err);
+    }
+
     Ok(conn)
 }
 
@@ -57,7 +194,8 @@ fn value_to_string(value: Value) -> String {
     match value {
         Value::Integer(i) => i.to_string(),
         Value::Real(f) => f.to_string(),
-        Value::Text(s) => s,
+        // Replace \r\n with \n, as \r\n causes formatting issues with table
+        Value::Text(s) => s.replace("\r\n", "\n"),
         Value::Blob(_) => String::from("Blob"),
         Value::Null => String::from("NULL"),
     }
@@ -74,7 +212,8 @@ fn run_sql_query(conn: &Connection, sql: &str) -> Result<(), SqlError> {
     table
         .load_preset(UTF8_FULL)
         .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_width(80)
+        // TODO: make table width configurable
+        // .set_width(80)
         .set_header(&column_names);
 
     // Execute the SQL query
@@ -103,7 +242,7 @@ fn run_sql_query(conn: &Connection, sql: &str) -> Result<(), SqlError> {
 
 // Constants for the terminal prompt and the initial SQL query
 const TERMINAL_PROMPT: &str = ">> ";
-const INIT_SQL_QUERY: &str = "SELECT * FROM COMMITS ORDER BY date DESC LIMIT 1;";
+const INIT_SQL_QUERY: &str = "SELECT * FROM commits ORDER BY date DESC LIMIT 1;";
 
 fn main() -> Result<(), String> {
     // TODO: take repo_path as an option

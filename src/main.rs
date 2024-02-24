@@ -242,16 +242,15 @@ fn init_db(repo: &Repository) -> Result<Connection, Error> {
 
         // Continue iterating over tags
         true
-    })
-    .expect("Tags should be iterable");
+    })?;
 
     if let Some(tag_sql_err) = tag_sql_error {
         return Err(tag_sql_err);
     }
 
     // Insert branches
-    for branch in repo.branches(None).expect("Branches should be iterable") {
-        let b = branch.expect("Branch should be valid");
+    for branch in repo.branches(None)? {
+        let b = branch?;
         insert_branch(&conn, b.0, b.1)?;
     }
 

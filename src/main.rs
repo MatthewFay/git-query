@@ -1,10 +1,39 @@
 use chrono::{TimeZone, Utc};
 use comfy_table::Table;
 use comfy_table::{presets::UTF8_FULL, ContentArrangement};
-use git2::{Commit as GitCommit, ObjectType, Oid, Repository, Revwalk, Tag, Time};
+use git2::{Branch, BranchType, Commit as GitCommit, ObjectType, Oid, Repository, Tag, Time};
 use rusqlite::params;
-use rusqlite::{types::Value, Connection, Error as SqlError, Result};
+use rusqlite::{types::Value, Connection, Result};
+use std::fmt;
 use std::io::{stdin, stdout, Write};
+
+// Enum for errors
+#[derive(Debug)]
+enum Error {
+    GitError(git2::Error),
+    SqlError(rusqlite::Error),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::GitError(err) => write!(f, "Git error: {}", err),
+            Self::SqlError(err) => write!(f, "SQL error: {}", err),
+        }
+    }
+}
+
+impl From<git2::Error> for Error {
+    fn from(err: git2::Error) -> Self {
+        Error::GitError(err)
+    }
+}
+
+impl From<rusqlite::Error> for Error {
+    fn from(err: rusqlite::Error) -> Self {
+        Error::SqlError(err)
+    }
+}
 
 // Enum to support both annotated and lightweight git tags
 enum GitTag<'a> {
@@ -17,13 +46,13 @@ enum GitTag<'a> {
 }
 
 // Function to insert a Git commit into the SQLite database
-fn insert_commit(conn: &Connection, commit: &GitCommit) -> Result<()> {
+fn insert_commit(conn: &Connection, commit: &GitCommit) -> Result<(), Error> {
     // Extract the commit datetime in UTC
     let datetime = Utc.timestamp_opt(commit.time().seconds(), 0);
 
     // Execute the SQL INSERT statement
     conn.execute(
-        "INSERT INTO commits (id, author, date, message) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT OR IGNORE INTO commits (id, author, date, message) VALUES (?1, ?2, ?3, ?4)",
         params![
             // Store only the first 7 characters of the commit id
             commit.id().to_string().chars().take(7).collect::<String>(),
@@ -54,7 +83,7 @@ fn remove_pgp_signature(message: &str) -> String {
 }
 
 // Function to insert a Git tag into the SQLite database
-fn insert_tag(conn: &Connection, tag: GitTag) -> Result<()> {
+fn insert_tag(conn: &Connection, tag: GitTag) -> Result<(), Error> {
     match tag {
         GitTag::Annotated(t) => {
             let tagger: Option<String> = t
@@ -103,8 +132,37 @@ fn insert_tag(conn: &Connection, tag: GitTag) -> Result<()> {
     Ok(())
 }
 
+// Function to insert a Git branch into the SQLite database
+fn insert_branch(conn: &Connection, branch: Branch, branch_type: BranchType) -> Result<(), Error> {
+    let reference = branch.get();
+    let head_commit = reference.peel_to_commit().ok();
+    let head_commit_id = head_commit
+        .as_ref()
+        .map(|h| h.id().to_string().chars().take(7).collect::<String>());
+    let head_commit_date = head_commit.as_ref().map(|h| {
+        Utc.timestamp_opt(h.time().seconds(), 0)
+            .unwrap()
+            .to_string()
+    });
+
+    conn.execute(
+        "INSERT INTO branches (name, type, head_commit_id, head_commit_date) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            branch.name().ok(),
+            match branch_type {
+                BranchType::Local => "local",
+                BranchType::Remote => "remote",
+            },
+            head_commit_id,
+            head_commit_date
+        ],
+    )?;
+
+    Ok(())
+}
+
 // Function to initialize the SQLite database with Git commit data
-fn init_db(repo: &Repository, revwalk: Revwalk) -> Result<Connection, SqlError> {
+fn init_db(repo: &Repository) -> Result<Connection, Error> {
     // Open an in-memory SQLite database
     let conn = Connection::open_in_memory()?;
 
@@ -133,15 +191,20 @@ fn init_db(repo: &Repository, revwalk: Revwalk) -> Result<Connection, SqlError> 
         (),
     )?;
 
-    // Iterate over Git commit history and insert each commit into the database
-    for commit_id in revwalk {
-        let commit_id = commit_id.expect("Failed to get commit ID");
-        let commit = repo.find_commit(commit_id).expect("Failed to find commit");
+    // Create the 'branches' table
+    conn.execute(
+        "CREATE TABLE branches (
+                        name             TEXT,
+                        type             TEXT,
+                        head_commit_id   TEXT,
+                        head_commit_date TEXT
+                    )",
+        (),
+    )?;
 
-        insert_commit(&conn, &commit)?;
-    }
+    traverse(&conn, &repo, None)?;
 
-    let mut tag_sql_error: Option<SqlError> = None;
+    let mut tag_sql_error: Option<Error> = None;
 
     // Insert tags
     repo.tag_foreach(|id, name| {
@@ -179,11 +242,16 @@ fn init_db(repo: &Repository, revwalk: Revwalk) -> Result<Connection, SqlError> 
 
         // Continue iterating over tags
         true
-    })
-    .expect("Tags should be iterable");
+    })?;
 
     if let Some(tag_sql_err) = tag_sql_error {
         return Err(tag_sql_err);
+    }
+
+    // Insert branches
+    for branch in repo.branches(None)? {
+        let b = branch?;
+        insert_branch(&conn, b.0, b.1)?;
     }
 
     Ok(conn)
@@ -202,7 +270,7 @@ fn value_to_string(value: Value) -> String {
 }
 
 // Function to run an SQL query and display the results in a table
-fn run_sql_query(conn: &Connection, sql: &str) -> Result<(), SqlError> {
+fn run_sql_query(conn: &Connection, sql: &str) -> Result<(), Error> {
     let mut stmt = conn.prepare(sql)?;
     let column_names: Vec<&str> = stmt.column_names().into_iter().collect();
     let column_len = column_names.len();
@@ -237,6 +305,33 @@ fn run_sql_query(conn: &Connection, sql: &str) -> Result<(), SqlError> {
     println!("{table}");
     println!("Rows returned: {}", row_count);
 
+    // Show tip if no results returned and SQL query contains `commits`
+    if row_count == 0 && sql.contains("commits") {
+        println!("Tip: use the `traverse <commit id>` command to insert commit history")
+    }
+
+    Ok(())
+}
+
+// Function to traverse commit history and insert into database
+fn traverse(conn: &Connection, repo: &Repository, commit_id: Option<&str>) -> Result<(), Error> {
+    // Create a revwalk to traverse the commit history
+    let mut revwalk = repo.revwalk()?;
+    if let Some(c_id) = commit_id {
+        let commit = repo.find_commit_by_prefix(c_id)?;
+        revwalk.push(commit.id())?;
+    } else {
+        revwalk.push_head()?;
+    }
+
+    // Iterate over Git commit history and insert each commit into the database
+    for commit_id in revwalk {
+        let commit_id = commit_id?;
+        let commit = repo.find_commit(commit_id)?;
+
+        insert_commit(&conn, &commit)?;
+    }
+
     Ok(())
 }
 
@@ -251,12 +346,8 @@ fn main() -> Result<(), String> {
     // Open the Git repository
     let repo = Repository::open(repo_path).map_err(|err| format!("Cannot open repo. {}", err))?;
 
-    // Create a revwalk to traverse the commit history
-    let mut revwalk = repo.revwalk().expect("Failed to create revwalk");
-    revwalk.push_head().expect("Failed to push HEAD OID");
-
     // Initialize the SQLite database with Git commit data
-    let conn = init_db(&repo, revwalk).map_err(|err| format!("DB error. {}", err))?;
+    let conn = init_db(&repo).map_err(|err| format!("DB error. {}", err))?;
 
     // Run the initial SQL query and display the result
     println!("{}{}", TERMINAL_PROMPT, INIT_SQL_QUERY);
@@ -278,18 +369,24 @@ fn main() -> Result<(), String> {
 
         let input = input.trim(); // Remove newline characters
 
-        match input {
-            "exit" | "quit" => break,
-            "help" => {
+        match input.split_whitespace().collect::<Vec<&str>>().as_slice() {
+            [] => {}
+            ["exit"] | ["quit"] => break,
+            ["help"] => {
                 println!("Available commands:");
-                println!(" - `help`: Display this help message.");
                 println!(" - `exit` or `quit`: Exit the program.");
+                println!(" - `help`: Display this help message.");
+                println!(" - `traverse <commit id>`: Traverse commit history and insert each commit into the database.");
                 println!(" - Enter SQL at the prompt to see results.");
             }
-            "" => {}
+            ["traverse", commit_id] => {
+                if let Err(err) = traverse(&conn, &repo, Some(commit_id)) {
+                    eprintln!("traverse error. {}", err);
+                }
+            }
             _ => {
                 if let Err(err) = run_sql_query(&conn, input) {
-                    eprintln!("SQL error. {}", err);
+                    eprintln!("{err}");
                 }
             }
         }

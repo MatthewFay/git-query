@@ -1,9 +1,7 @@
 use chrono::{TimeZone, Utc};
 use comfy_table::Table;
 use comfy_table::{presets::UTF8_FULL, ContentArrangement};
-use git2::{
-    Branch, BranchType, Commit as GitCommit, ObjectType, Oid, Repository, Revwalk, Tag, Time,
-};
+use git2::{Branch, BranchType, Commit as GitCommit, ObjectType, Oid, Repository, Tag, Time};
 use rusqlite::params;
 use rusqlite::{types::Value, Connection, Result};
 use std::fmt;
@@ -164,7 +162,7 @@ fn insert_branch(conn: &Connection, branch: Branch, branch_type: BranchType) -> 
 }
 
 // Function to initialize the SQLite database with Git commit data
-fn init_db(repo: &Repository, revwalk: Revwalk) -> Result<Connection, Error> {
+fn init_db(repo: &Repository) -> Result<Connection, Error> {
     // Open an in-memory SQLite database
     let conn = Connection::open_in_memory()?;
 
@@ -204,13 +202,7 @@ fn init_db(repo: &Repository, revwalk: Revwalk) -> Result<Connection, Error> {
         (),
     )?;
 
-    // Iterate over Git commit history and insert each commit into the database
-    for commit_id in revwalk {
-        let commit_id = commit_id.expect("Failed to get commit ID");
-        let commit = repo.find_commit(commit_id).expect("Failed to find commit");
-
-        insert_commit(&conn, &commit)?;
-    }
+    traverse(&conn, &repo, None)?;
 
     let mut tag_sql_error: Option<Error> = None;
 
@@ -322,11 +314,16 @@ fn run_sql_query(conn: &Connection, sql: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn traverse(conn: &Connection, repo: &Repository, commit_id: &str) -> Result<(), Error> {
+// Function to traverse commit history and insert into database
+fn traverse(conn: &Connection, repo: &Repository, commit_id: Option<&str>) -> Result<(), Error> {
     // Create a revwalk to traverse the commit history
     let mut revwalk = repo.revwalk()?;
-    let commit = repo.find_commit_by_prefix(commit_id)?;
-    revwalk.push(commit.id())?;
+    if let Some(c_id) = commit_id {
+        let commit = repo.find_commit_by_prefix(c_id)?;
+        revwalk.push(commit.id())?;
+    } else {
+        revwalk.push_head()?;
+    }
 
     // Iterate over Git commit history and insert each commit into the database
     for commit_id in revwalk {
@@ -350,12 +347,8 @@ fn main() -> Result<(), String> {
     // Open the Git repository
     let repo = Repository::open(repo_path).map_err(|err| format!("Cannot open repo. {}", err))?;
 
-    // Create a revwalk to traverse the commit history
-    let mut revwalk = repo.revwalk().expect("Failed to create revwalk");
-    revwalk.push_head().expect("Failed to push HEAD OID");
-
     // Initialize the SQLite database with Git commit data
-    let conn = init_db(&repo, revwalk).map_err(|err| format!("DB error. {}", err))?;
+    let conn = init_db(&repo).map_err(|err| format!("DB error. {}", err))?;
 
     // Run the initial SQL query and display the result
     println!("{}{}", TERMINAL_PROMPT, INIT_SQL_QUERY);
@@ -388,7 +381,7 @@ fn main() -> Result<(), String> {
                 println!(" - Enter SQL at the prompt to see results.");
             }
             ["traverse", commit_id] => {
-                if let Err(err) = traverse(&conn, &repo, commit_id) {
+                if let Err(err) = traverse(&conn, &repo, Some(commit_id)) {
                     eprintln!("traverse error. {}", err);
                 }
             }

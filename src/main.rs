@@ -7,16 +7,6 @@ use rusqlite::{types::Value, Connection, Result};
 use std::fmt;
 use std::io::{stdin, stdout, Write};
 
-// Enum to support both annotated and lightweight git tags
-enum GitTag<'a> {
-    Annotated(Tag<'a>),
-    Lightweight {
-        id: Oid,
-        name: Option<String>,
-        target_id: Oid,
-    },
-}
-
 // Enum for errors
 #[derive(Debug)]
 enum Error {
@@ -43,6 +33,16 @@ impl From<rusqlite::Error> for Error {
     fn from(err: rusqlite::Error) -> Self {
         Error::SqlError(err)
     }
+}
+
+// Enum to support both annotated and lightweight git tags
+enum GitTag<'a> {
+    Annotated(Tag<'a>),
+    Lightweight {
+        id: Oid,
+        name: Option<String>,
+        target_id: Oid,
+    },
 }
 
 // Function to insert a Git commit into the SQLite database

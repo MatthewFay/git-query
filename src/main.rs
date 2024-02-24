@@ -386,7 +386,7 @@ fn main() -> Result<(), String> {
             }
             _ => {
                 if let Err(err) = run_sql_query(&conn, input) {
-                    eprintln!("SQL error. {}", err);
+                    eprintln!("{err}");
                 }
             }
         }

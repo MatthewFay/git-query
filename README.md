@@ -26,6 +26,10 @@ cargo install git-query
    exit
    ```
 
+To load additional commit history from a commit that is not present (e.g., a commit in another branch), you can use the `traverse` command: `traverse <commit id>`.
+
+If you only want commit history for a particular branch, navigate to that branch (using `git checkout`) before running `git-query`.
+
 ### Tables
 
 See below for information on the SQL tables that can be queried, and the data within.
@@ -36,6 +40,13 @@ See below for information on the SQL tables that can be queried, and the data wi
 * `author`: Author of the commit
 * `date`: Datetime of the commit
 * `message`: Commit message
+
+#### branches
+
+* `name`: Branch name
+* `type`: Branch type (either remote or local)
+* `head_commit_id`: HEAD commit id
+* `head_commit_date`: Datetime of HEAD commit
 
 #### tags
 
@@ -145,6 +156,24 @@ Rows returned: 1
 │         ┆               ┆                         ┆                          │
 └─────────┴───────────────┴─────────────────────────┴──────────────────────────┘
 Rows returned: 1
+```
+
+#### Get branches ordered by head commit date
+
+```
+>> SELECT * FROM branches ORDER BY head_commit_date DESC; 
+┌───────────────┬────────┬────────────────┬─────────────────────────┐
+│ name          ┆ type   ┆ head_commit_id ┆ head_commit_date        │
+╞═══════════════╪════════╪════════════════╪═════════════════════════╡
+│ master        ┆ local  ┆ 1d54973        ┆ 2024-02-13 03:49:34 UTC │
+├╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ origin/HEAD   ┆ remote ┆ 1d54973        ┆ 2024-02-13 03:49:34 UTC │
+├╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ origin/master ┆ remote ┆ 1d54973        ┆ 2024-02-13 03:49:34 UTC │
+├╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ origin/watt   ┆ remote ┆ af31449        ┆ 2022-07-02 00:56:18 UTC │
+└───────────────┴────────┴────────────────┴─────────────────────────┘
+Rows returned: 4
 ```
 
 #### Get most recent tag

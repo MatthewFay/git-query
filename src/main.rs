@@ -370,7 +370,7 @@ fn main() -> Result<(), String> {
         let input = input.trim(); // Remove newline characters
 
         match input.split_whitespace().collect::<Vec<&str>>().as_slice() {
-            [""] => {}
+            [] => {}
             ["exit"] | ["quit"] => break,
             ["help"] => {
                 println!("Available commands:");
